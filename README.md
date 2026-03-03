@@ -1,22 +1,12 @@
-# Put-Call Parity Arbitrage Backtester
+## Put-Call Parity Arbitrage Portfolio Simulator
 
-A simple procedural Python backtester that scans historical options data for **put-call parity** violations and flags potential arbitrage opportunities above a given transaction-cost threshold.
+A single-file Python project that:
 
----
-
-## Put-Call Parity (no dividends)
-
-Under no-arbitrage, the following must hold:
-
-$$C - P = S - K e^{-rT}$$
-
-- **C** = call price, **P** = put price  
-- **S** = spot price, **K** = strike, **r** = risk-free rate, **T** = time to expiration (years)
-
-- **Synthetic forward:** \(C - P\)  
-- **Actual forward:** \(S - K e^{-rT}\)
-
-The script computes both sides and flags rows where \(|(C - P) - (S - K e^{-rT})|\) exceeds a chosen margin (e.g. 0.05).
+- **Loads historical SPY options data** from `options_data.csv`  
+- **Builds put-call parity arbitrage signals** using bid/ask quotes  
+- **Simulates a chronological options portfolio** that executes 1-contract arbitrage trades when capital allows  
+- **Benchmarks against a buy-and-hold SPY position**  
+- **Plots portfolio vs benchmark** over time
 
 ---
 
@@ -24,10 +14,11 @@ The script computes both sides and flags rows where \(|(C - P) - (S - K e^{-rT})
 
 - Python 3.x  
 - `pandas`  
-- `numpy`
+- `numpy`  
+- `matplotlib`
 
 ```bash
-pip install pandas numpy
+pip install pandas numpy matplotlib
 ```
 
 ---
@@ -36,18 +27,150 @@ pip install pandas numpy
 
 Place a file named **`options_data.csv`** in the same directory as the script.
 
-Expected columns:
+The script expects **CBOE-style SPY options data** with columns like:
 
-| Column        | Description                          |
-|---------------|--------------------------------------|
-| `timestamp`   | Quote datetime                       |
-| `expiration`  | Option expiration datetime           |
-| `strike`      | Strike price \(K\)                   |
-| `option_type` | `'C'` (call) or `'P'` (put)          |
-| `option_price`| Option price                         |
-| `spot`        | Underlying spot price \(S\)          |
+| Column            | Description                           |
+|-------------------|---------------------------------------|
+| `[QUOTE_READTIME]`| Quote timestamp (local time)          |
+| `[EXPIRE_DATE]`   | Option expiration date                |
+| `[STRIKE]`        | Strike price \(K\)                    |
+| `[UNDERLYING_LAST]` | Underlying SPY last price \(S\)    |
+| `[C_BID]` / `[C_ASK]` | Call bid/ask                      |
+| `[P_BID]` / `[P_ASK]` | Put bid/ask                       |
 
-The script pivots the data so that for each `(timestamp, expiration, strike, spot)` there is one row with both call and put prices.
+Column names are automatically mapped by stripping spaces/brackets and lowercasing, so the script is tolerant to minor formatting differences.
+
+---
+
+## Arbitrage Logic
+
+We assume **no dividends** and a constant risk-free rate \(r = 0.04\). For each quote:
+
+- Time to expiration in years:
+
+  \[
+  T = \frac{\text{expiration} - \text{timestamp}}{365 \times 24 \times 60 \times 60}
+  \]
+
+- Present value of strike:
+
+  \[
+  \text{PV}_K = K e^{-rT}
+  \]
+
+- Simulated stock bid/ask around the last price:
+
+  \[
+  \text{Stock\_BID} = S - 0.02, \quad \text{Stock\_ASK} = S + 0.02
+  \]
+
+### Condition A – Reversal (Sell Synthetic, Buy Actual)
+
+Use call **bid**, put **ask**, and stock **ask**:
+
+\[
+\text{Arbitrage\_A\_Profit} =
+\big(C_{\text{BID}} - P_{\text{ASK}}\big)
+- \big(\text{Stock\_ASK} - \text{PV}_K\big)
+- \text{Transaction\_Costs}
+\]
+
+### Condition B – Conversion (Buy Synthetic, Sell Actual)
+
+Use call **ask**, put **bid**, and stock **bid**:
+
+\[
+\text{Arbitrage\_B\_Profit} =
+\big(\text{Stock\_BID} - \text{PV}_K\big)
+- \big(C_{\text{ASK}} - P_{\text{BID}}\big)
+- \text{Transaction\_Costs}
+\]
+
+- **Transaction costs** are assumed to be **\$0.05 per option contract leg**.  
+  With one call and one put per trade, that is effectively **\$0.10 per share** (10 dollars per 1-lot contract) and is subtracted in the formulas above.
+
+For each row, the script computes both profits, keeps:
+
+- **`Arbitrage_A_Profit`**, **`Arbitrage_B_Profit`** (per share)  
+- **`Best_Profit_per_share`** = `max(A, B)`  
+- **`Best_Condition`** = `"A"` or `"B"`  
+- **`Has_Arb`** = `True` if `Best_Profit_per_share > 0`
+
+---
+
+## Chronological Portfolio Simulator
+
+- **Starting capital**: `100000`  
+- **Sorting**: all quotes are sorted chronologically by `timestamp`.  
+- A `date` column is built from the timestamp for daily portfolio tracking.
+
+### Trade Execution Rules
+
+For each **trading date**:
+
+- **Settle expiring trades**  
+  - Any active trade whose `expiration_date` equals the current date is settled.  
+  - The simulator returns the **locked capital** and adds the **expected profit** to `current_cash`.
+
+- **Scan for arbitrage opportunities**  
+  - Filter that day’s rows where `Has_Arb == True`.  
+  - Sort by `Best_Profit_per_share` (highest first).  
+  - For each candidate:
+    - Compute **`Capital_Required = spot * 100`** (1 contract = 100 shares of SPY).  
+    - If `Current_Cash >= Capital_Required`, open a **single 1-lot trade**:
+      - Lock `Capital_Required` (removed from `Current_Cash`).  
+      - Store an entry in `active_trades` with:
+        - `open_date`, `expiration_date`  
+        - `direction` (`"A"` or `"B"`)  
+        - `capital_required`  
+        - `expected_profit = Best_Profit_per_share * 100`
+
+- **Portfolio value per date**:
+  - `Locked_Capital` = sum of `capital_required` for all open trades  
+  - `Total_Portfolio_Value` = `Current_Cash + Locked_Capital`
+
+The script **prints a one-line daily summary**:
+
+- Date, cash, locked capital, total value, SPY benchmark value, active trade count, and how many new trades were opened on that date.
+
+---
+
+## SPY Benchmark
+
+On the **very first trading date**:
+
+- Buy as many shares of SPY as possible with `100000` at the first day’s spot price.
+
+For each subsequent date:
+
+- Take the **last SPY price of that date** (`spot`) and compute:
+
+  \[
+  \text{Benchmark\_Value} = \text{Shares} \times \text{Current\_Spot\_Price}
+  \]
+
+The benchmark is a simple **buy-and-hold SPY** strategy.
+
+---
+
+## Visualization
+
+At the end of the simulation, the script builds a `portfolio_history` DataFrame with:
+
+- `date`  
+- `current_cash`  
+- `locked_capital`  
+- `total_portfolio_value`  
+- `benchmark_value`  
+- `num_active_trades`  
+- `num_new_trades`
+
+It then uses `matplotlib` to plot two lines over time:
+
+- **Arbitrage Portfolio Value** (`total_portfolio_value`)  
+- **SPY Benchmark Value** (`benchmark_value`)
+
+Both are plotted on the same chart with date on the x-axis and value in dollars on the y-axis.
 
 ---
 
@@ -59,34 +182,11 @@ From the project directory:
 python put_call_parity_backtester.py
 ```
 
-The script prints the DataFrame after each major step so you can verify alignment and computed columns.
+You will see:
 
----
-
-## Parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| Risk-free rate `r` | 0.04 | Used in \(K e^{-rT}\) |
-| Transaction cost margin | 0.05 | Arbitrage flag when \(\|C-P - (S - K e^{-rT})\| >\) this value |
-
-Edit these near the top of `main()` in `put_call_parity_backtester.py` if you want to change them.
-
----
-
-## Output
-
-The final DataFrame includes (among others):
-
-- **T_years** — time to expiration in years  
-- **PV_K** — \(K e^{-rT}\)  
-- **Synthetic_Forward** — \(C - P\)  
-- **Actual_Forward** — \(S - K e^{-rT}\)  
-- **Parity_Diff** — Synthetic minus Actual  
-- **Abs_Parity_Diff** — absolute difference  
-- **Arb_Opportunity** — `True` when `Abs_Parity_Diff >` transaction cost margin  
-
-A summary count of flagged arbitrage opportunities is printed at the end.
+- Early prints showing data loading, column mappings, and arbitrage calculations.  
+- Daily portfolio summaries logging **cash**, **locked capital**, **total value**, **benchmark**, and **trade counts**.  
+- A final pop-up window with the **portfolio vs benchmark chart**.
 
 ---
 
