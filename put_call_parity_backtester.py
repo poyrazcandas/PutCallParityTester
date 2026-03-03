@@ -7,7 +7,7 @@ def main():
     # 1. Load the CSV data
     # ==========================
 
-    df = pd.read_csv("options_data.csv")
+    df = pd.read_csv("options_data.csv", low_memory=False)
 
     print("\n=== Raw data (first 10 rows) ===")
     print(df.head(10))
@@ -15,112 +15,105 @@ def main():
     print("\nNumber of rows:", len(df))
 
     # ==========================
-    # 1b. Normalize column names
-    #     so the rest of the script
-    #     can assume standard names
+    # 1b. Map vendor column names
+    #     to standard names we use
     # ==========================
 
-    cols_lower = {c.lower(): c for c in df.columns}
+    canonical_map = {}
+    for c in df.columns:
+        canon = c.strip()
+        if canon.startswith("[") and canon.endswith("]"):
+            canon = canon[1:-1]
+        canon = canon.strip().lower()
+        canonical_map[canon] = c
 
-    def find_col(candidates, required_name):
+    def get_col(candidates, required_name):
         for cand in candidates:
-            if cand in cols_lower:
-                return cols_lower[cand]
+            key = cand.lower()
+            if key in canonical_map:
+                return canonical_map[key]
         raise ValueError(
             f"Could not find required column for '{required_name}'. "
             f"Available columns: {list(df.columns)}"
         )
 
-    timestamp_actual = find_col(
-        ["timestamp", "time", "datetime", "date"],
+    # These are tailored to the sample headers you have:
+    # [QUOTE_READTIME], [EXPIRE_DATE], [STRIKE], [UNDERLYING_LAST],
+    # [C_LAST], [P_LAST]
+    timestamp_actual = get_col(
+        ["QUOTE_READTIME", "QUOTE_DATE"],
         "timestamp",
     )
-    expiration_actual = find_col(
-        ["expiration", "expiry", "exp_date", "maturity", "expiration_date"],
+    expiration_actual = get_col(
+        ["EXPIRE_DATE"],
         "expiration",
     )
-    strike_actual = find_col(
-        ["strike", "k", "strike_price"],
+    strike_actual = get_col(
+        ["STRIKE"],
         "strike",
     )
-    option_type_actual = find_col(
-        ["option_type", "cp_flag", "call_put", "type"],
-        "option_type",
-    )
-    option_price_actual = find_col(
-        ["option_price", "price", "option_px"],
-        "option_price",
-    )
-    spot_actual = find_col(
-        ["spot", "underlying", "underlying_price", "s", "stock_price"],
+    spot_actual = get_col(
+        ["UNDERLYING_LAST"],
         "spot",
     )
+    c_price_actual = get_col(
+        ["C_LAST", "C_BID"],
+        "C_price",
+    )
+    p_price_actual = get_col(
+        ["P_LAST", "P_BID"],
+        "P_price",
+    )
 
-    rename_map = {
-        timestamp_actual: "timestamp",
-        expiration_actual: "expiration",
-        strike_actual: "strike",
-        option_type_actual: "option_type",
-        option_price_actual: "option_price",
-        spot_actual: "spot",
-    }
+    aligned = df[
+        [
+            timestamp_actual,
+            expiration_actual,
+            strike_actual,
+            spot_actual,
+            c_price_actual,
+            p_price_actual,
+        ]
+    ].copy()
 
-    df = df.rename(columns=rename_map)
+    aligned = aligned.rename(
+        columns={
+            timestamp_actual: "timestamp",
+            expiration_actual: "expiration",
+            strike_actual: "strike",
+            spot_actual: "spot",
+            c_price_actual: "C_price",
+            p_price_actual: "P_price",
+        }
+    )
 
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
-    df["expiration"] = pd.to_datetime(df["expiration"])
+    aligned["timestamp"] = pd.to_datetime(aligned["timestamp"])
+    aligned["expiration"] = pd.to_datetime(aligned["expiration"])
 
-    print("\n=== After normalizing column names (first 10 rows) ===")
-    print(df.head(10))
-    print("\nData columns (normalized):", df.columns.tolist())
-    print("\nNumber of rows:", len(df))
+    # Ensure numeric types for math operations
+    for col in ["strike", "spot", "C_price", "P_price"]:
+        aligned[col] = pd.to_numeric(aligned[col], errors="coerce")
 
-    # ==========================
-    # 2. Clean & align the data
-    #    Get C, P, S in same row
-    # ==========================
+    print("\n=== After selecting, renaming, and type-casting core columns (first 10 rows) ===")
+    print(aligned.head(10))
+    print("\nDtypes:", aligned.dtypes)
+    print("\nNumber of rows (aligned):", len(aligned))
 
-    # Drop rows with critical missing values
-    df = df.dropna(
+    # Drop rows where any of the core fields are missing
+    aligned = aligned.dropna(
         subset=[
             "timestamp",
             "expiration",
             "strike",
-            "option_type",
-            "option_price",
             "spot",
+            "C_price",
+            "P_price",
         ]
     )
 
-    # Ensure consistent option_type values (e.g., 'C'/'P')
-    df["option_type"] = df["option_type"].astype(str).str.upper().str.strip()
-
-    # Pivot so that each row has columns for Call (C) and Put (P)
-    # Index is timestamp, expiration, strike, and spot (S)
-    aligned = (
-        df.pivot_table(
-            index=["timestamp", "expiration", "strike", "spot"],
-            columns="option_type",
-            values="option_price",
-            aggfunc="mean",  # if multiple quotes per bucket, average them
-        )
-        .reset_index()
-    )
-
-    # After pivot, columns 'C' and 'P' should exist
-    aligned = aligned.rename(columns={"C": "C_price", "P": "P_price"})
-
-    print("\n=== After pivot/alignment (first 10 rows) ===")
+    print("\n=== After dropping rows with missing core fields (first 10 rows) ===")
     print(aligned.head(10))
-    print("\nData columns after alignment:", aligned.columns.tolist())
-    print("\nNumber of rows after alignment:", len(aligned))
-
-    # Drop rows where either C or P is missing
-    aligned = aligned.dropna(subset=["C_price", "P_price"])
-
-    print("\n=== After dropping rows with missing C or P (first 10 rows) ===")
-    print(aligned.head(10))
-    print("\nNumber of rows after dropping missing C/P:", len(aligned))
+    print("\nNumber of rows after dropping missing:", len(aligned))
 
     # ==========================
     # 3. Calculate T (time to expiration in years)
