@@ -1,0 +1,2 @@
+# Large data file — keep locally; add to Git LFS if you need it in the repo
+options_data.csv
