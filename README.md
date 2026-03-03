@@ -2,11 +2,11 @@
 
 A single-file Python project that:
 
-- **Loads historical SPY options data** from `options_data.csv`  
-- **Builds put-call parity arbitrage signals** using bid/ask quotes  
-- **Simulates a chronological options portfolio** that executes 1-contract arbitrage trades when capital allows  
-- **Benchmarks against a buy-and-hold SPY position**  
-- **Plots portfolio vs benchmark** over time
+- **Loads** historical SPY options data from `options_data.csv`
+- **Builds** put–call parity arbitrage signals using bid/ask quotes
+- **Simulates** a chronological options portfolio that executes 1‑contract arbitrage trades when capital allows
+- **Benchmarks** against a buy‑and‑hold SPY position
+- **Plots** portfolio value vs benchmark over time
 
 ---
 
@@ -25,18 +25,18 @@ pip install pandas numpy matplotlib
 
 ## Data
 
-Place a file named **`options_data.csv`** in the same directory as the script.
+Place a file named `options_data.csv` in the same directory as the script.
 
-The script expects **CBOE-style SPY options data** with columns like:
+The script expects CBOE‑style SPY options data with columns like:
 
-| Column            | Description                           |
-|-------------------|---------------------------------------|
-| `[QUOTE_READTIME]`| Quote timestamp (local time)          |
-| `[EXPIRE_DATE]`   | Option expiration date                |
-| `[STRIKE]`        | Strike price \(K\)                    |
-| `[UNDERLYING_LAST]` | Underlying SPY last price \(S\)    |
-| `[C_BID]` / `[C_ASK]` | Call bid/ask                      |
-| `[P_BID]` / `[P_ASK]` | Put bid/ask                       |
+| Column              | Description                          |
+|---------------------|--------------------------------------|
+| `[QUOTE_READTIME]`  | Quote timestamp (local time)         |
+| `[EXPIRE_DATE]`     | Option expiration date               |
+| `[STRIKE]`          | Strike price \(K\)                   |
+| `[UNDERLYING_LAST]` | Underlying SPY last price \(S\)      |
+| `[C_BID]` / `[C_ASK]` | Call bid / ask                    |
+| `[P_BID]` / `[P_ASK]` | Put bid / ask                     |
 
 Column names are automatically mapped by stripping spaces/brackets and lowercasing, so the script is tolerant to minor formatting differences.
 
@@ -44,25 +44,37 @@ Column names are automatically mapped by stripping spaces/brackets and lowercasi
 
 ## Arbitrage Logic
 
-We assume **no dividends** and a constant risk-free rate \(r = 0.04\). For each quote:
+Assumptions:
 
-- Time to expiration in years:
+- **No dividends**
+- **Risk‑free rate** \(r = 0.04\)
+- **1 option contract = 100 shares**
+- **Transaction costs**: \$0.05 per option contract leg (one call + one put = 2 legs)
+
+For each quote:
+
+- **Time to expiration in years**
 
   \[
   T = \frac{\text{expiration} - \text{timestamp}}{365 \times 24 \times 60 \times 60}
   \]
 
-- Present value of strike:
+- **Present value of strike**
 
   \[
-  \text{PV}_K = K e^{-rT}
+  \text{PV}_K = K \, e^{-rT}
   \]
 
-- Simulated stock bid/ask around the last price:
+- **Simulated stock bid/ask** around the last price
 
   \[
   \text{Stock\_BID} = S - 0.02, \quad \text{Stock\_ASK} = S + 0.02
   \]
+
+We treat all prices on a **per‑share** basis.  
+The transaction‑cost impact per share is:
+
+- `transaction_cost_per_share = 0.05 * 2 = 0.10`
 
 ### Condition A – Reversal (Sell Synthetic, Buy Actual)
 
@@ -72,7 +84,7 @@ Use call **bid**, put **ask**, and stock **ask**:
 \text{Arbitrage\_A\_Profit} =
 \big(C_{\text{BID}} - P_{\text{ASK}}\big)
 - \big(\text{Stock\_ASK} - \text{PV}_K\big)
-- \text{Transaction\_Costs}
+- \text{transaction\_cost\_per\_share}
 \]
 
 ### Condition B – Conversion (Buy Synthetic, Sell Actual)
@@ -83,18 +95,21 @@ Use call **ask**, put **bid**, and stock **bid**:
 \text{Arbitrage\_B\_Profit} =
 \big(\text{Stock\_BID} - \text{PV}_K\big)
 - \big(C_{\text{ASK}} - P_{\text{BID}}\big)
-- \text{Transaction\_Costs}
+- \text{transaction\_cost\_per\_share}
 \]
 
-- **Transaction costs** are assumed to be **\$0.05 per option contract leg**.  
-  With one call and one put per trade, that is effectively **\$0.10 per share** (10 dollars per 1-lot contract) and is subtracted in the formulas above.
+For each row the script computes:
 
-For each row, the script computes both profits, keeps:
+- **`Arbitrage_A_Profit`**, **`Arbitrage_B_Profit`** (per share)
+- **`Best_Profit_per_share`** = `max(Arbitrage_A_Profit, Arbitrage_B_Profit)`
+- **`Best_Condition`** = `"A"` or `"B"` depending on which is better
+- **`Has_Arb`** = `True` when `Best_Profit_per_share > 0`
 
-- **`Arbitrage_A_Profit`**, **`Arbitrage_B_Profit`** (per share)  
-- **`Best_Profit_per_share`** = `max(A, B)`  
-- **`Best_Condition`** = `"A"` or `"B"`  
-- **`Has_Arb`** = `True` if `Best_Profit_per_share > 0`
+In addition, only options with **time to expiration between 0 and ~60 days** are used in the simulation:
+
+- `0 < T_years <= 0.165`
+
+This avoids locking capital in far‑dated LEAPS.
 
 ---
 
@@ -102,44 +117,45 @@ For each row, the script computes both profits, keeps:
 
 - **Starting capital**: `100000`  
 - **Sorting**: all quotes are sorted chronologically by `timestamp`.  
-- A `date` column is built from the timestamp for daily portfolio tracking.
+- A daily `date` column is derived from `timestamp` for portfolio tracking.
 
 ### Trade Execution Rules
 
-For each **trading date**:
+For each trading `date`:
 
-- **Settle expiring trades**  
-  - Any active trade whose `expiration_date` equals the current date is settled.  
-  - The simulator returns the **locked capital** and adds the **expected profit** to `current_cash`.
+- **1. Settle expiring trades**
+  - Any active trade whose `expiration_date <= current_date` is considered matured.
+  - On maturity, the simulator **releases the original capital and the expected profit**:
+    - `current_cash += capital_required + expected_profit`
 
-- **Scan for arbitrage opportunities**  
-  - Filter that day’s rows where `Has_Arb == True`.  
-  - Sort by `Best_Profit_per_share` (highest first).  
+- **2. Scan for arbitrage opportunities**
+  - Filter that day’s rows where `Has_Arb == True`.
+  - Sort candidates by `Best_Profit_per_share` (highest first).
   - For each candidate:
-    - Compute **`Capital_Required = spot * 100`** (1 contract = 100 shares of SPY).  
-    - If `Current_Cash >= Capital_Required`, open a **single 1-lot trade**:
-      - Lock `Capital_Required` (removed from `Current_Cash`).  
-      - Store an entry in `active_trades` with:
+    - Compute **`Capital_Required = spot * 100`** (1 contract = 100 shares of SPY).
+    - If `Current_Cash >= Capital_Required`, open a **single 1‑lot trade**:
+      - Subtract `Capital_Required` from `current_cash`.
+      - Append an entry to `active_trades` containing:
         - `open_date`, `expiration_date`  
         - `direction` (`"A"` or `"B"`)  
         - `capital_required`  
         - `expected_profit = Best_Profit_per_share * 100`
 
-- **Portfolio value per date**:
-  - `Locked_Capital` = sum of `capital_required` for all open trades  
-  - `Total_Portfolio_Value` = `Current_Cash + Locked_Capital`
+- **3. Portfolio value per date**
+  - `Locked_Capital = sum(trade["capital_required"] for trade in active_trades)`  
+  - `Total_Portfolio_Value = Current_Cash + Locked_Capital`
 
-The script **prints a one-line daily summary**:
+The script prints a **one‑line daily summary**:
 
-- Date, cash, locked capital, total value, SPY benchmark value, active trade count, and how many new trades were opened on that date.
+- Date, `current_cash`, `locked_capital`, `total_portfolio_value`, SPY benchmark value, number of active trades, and number of new trades opened that day.
 
 ---
 
 ## SPY Benchmark
 
-On the **very first trading date**:
+On the **first trading date**:
 
-- Buy as many shares of SPY as possible with `100000` at the first day’s spot price.
+- Use the initial `100000` capital to buy as many shares of SPY (the underlying spot) as possible at that day’s spot price.
 
 For each subsequent date:
 
@@ -149,7 +165,7 @@ For each subsequent date:
   \text{Benchmark\_Value} = \text{Shares} \times \text{Current\_Spot\_Price}
   \]
 
-The benchmark is a simple **buy-and-hold SPY** strategy.
+This is a simple **buy‑and‑hold SPY benchmark**.
 
 ---
 
@@ -157,20 +173,20 @@ The benchmark is a simple **buy-and-hold SPY** strategy.
 
 At the end of the simulation, the script builds a `portfolio_history` DataFrame with:
 
-- `date`  
-- `current_cash`  
-- `locked_capital`  
-- `total_portfolio_value`  
-- `benchmark_value`  
-- `num_active_trades`  
+- `date`
+- `current_cash`
+- `locked_capital`
+- `total_portfolio_value`
+- `benchmark_value`
+- `num_active_trades`
 - `num_new_trades`
 
-It then uses `matplotlib` to plot two lines over time:
+It then uses `matplotlib` to plot **two lines over time**:
 
-- **Arbitrage Portfolio Value** (`total_portfolio_value`)  
+- **Arbitrage Portfolio Value** (`total_portfolio_value`)
 - **SPY Benchmark Value** (`benchmark_value`)
 
-Both are plotted on the same chart with date on the x-axis and value in dollars on the y-axis.
+Both lines use **date on the x‑axis** and **value in dollars on the y‑axis**.
 
 ---
 
@@ -185,11 +201,12 @@ python put_call_parity_backtester.py
 You will see:
 
 - Early prints showing data loading, column mappings, and arbitrage calculations.  
-- Daily portfolio summaries logging **cash**, **locked capital**, **total value**, **benchmark**, and **trade counts**.  
-- A final pop-up window with the **portfolio vs benchmark chart**.
+- Daily portfolio summaries logging cash, locked capital, total value, benchmark, and trade counts.  
+- A final pop‑up window with the **arbitrage portfolio vs SPY benchmark** chart.
 
 ---
 
 ## License
 
 Use and modify as you like.
+
