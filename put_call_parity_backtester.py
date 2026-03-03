@@ -7,15 +7,72 @@ def main():
     # 1. Load the CSV data
     # ==========================
 
-    # Adjust parse_dates list if your datetime columns have different names
-    df = pd.read_csv(
-        "options_data.csv",
-        parse_dates=["timestamp", "expiration"],
-    )
+    df = pd.read_csv("options_data.csv")
 
     print("\n=== Raw data (first 10 rows) ===")
     print(df.head(10))
     print("\nData columns:", df.columns.tolist())
+    print("\nNumber of rows:", len(df))
+
+    # ==========================
+    # 1b. Normalize column names
+    #     so the rest of the script
+    #     can assume standard names
+    # ==========================
+
+    cols_lower = {c.lower(): c for c in df.columns}
+
+    def find_col(candidates, required_name):
+        for cand in candidates:
+            if cand in cols_lower:
+                return cols_lower[cand]
+        raise ValueError(
+            f"Could not find required column for '{required_name}'. "
+            f"Available columns: {list(df.columns)}"
+        )
+
+    timestamp_actual = find_col(
+        ["timestamp", "time", "datetime", "date"],
+        "timestamp",
+    )
+    expiration_actual = find_col(
+        ["expiration", "expiry", "exp_date", "maturity", "expiration_date"],
+        "expiration",
+    )
+    strike_actual = find_col(
+        ["strike", "k", "strike_price"],
+        "strike",
+    )
+    option_type_actual = find_col(
+        ["option_type", "cp_flag", "call_put", "type"],
+        "option_type",
+    )
+    option_price_actual = find_col(
+        ["option_price", "price", "option_px"],
+        "option_price",
+    )
+    spot_actual = find_col(
+        ["spot", "underlying", "underlying_price", "s", "stock_price"],
+        "spot",
+    )
+
+    rename_map = {
+        timestamp_actual: "timestamp",
+        expiration_actual: "expiration",
+        strike_actual: "strike",
+        option_type_actual: "option_type",
+        option_price_actual: "option_price",
+        spot_actual: "spot",
+    }
+
+    df = df.rename(columns=rename_map)
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df["expiration"] = pd.to_datetime(df["expiration"])
+
+    print("\n=== After normalizing column names (first 10 rows) ===")
+    print(df.head(10))
+    print("\nData columns (normalized):", df.columns.tolist())
     print("\nNumber of rows:", len(df))
 
     # ==========================
